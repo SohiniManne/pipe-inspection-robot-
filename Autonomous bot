@@ -1,0 +1,228 @@
+// Ultrasonic Sensor Pins
+int trigPin = 18;
+int echoPin = 19;
+long duration;
+int distance;
+
+// Motor Driver Pins (L298N)
+int IN1 = 12;  // Right motor forward
+int IN2 = 14;  // Right motor backward
+int IN3 = 27;  // Left motor forward
+int IN4 = 26;  // Left motor backward
+
+// Constants
+const int OBSTACLE_DISTANCE = 20;       // Stop distance in cm
+const int SMOOTHING_READINGS = 5;       // Number of readings to average
+const int CONFIRMATION_COUNT = 3;       // Number of consecutive detections needed
+const unsigned long STOP_TIME = 500;    // Time to stop
+const unsigned long TURN_TIME = 1000;   // Time to turn
+
+// Variables for smoothing
+int distanceReadings[SMOOTHING_READINGS];
+int readIndex = 0;
+int total = 0;
+int averageDistance = 0;
+int obstacleCount = 0;
+
+// State machine variables
+enum RobotState {
+  MOVING_FORWARD,
+  OBSTACLE_STOP,
+  TURNING_LEFT,
+  CHECKING_PATH,
+  TURNING_RIGHT
+};
+
+RobotState currentState = MOVING_FORWARD;
+unsigned long stateStartTime = 0;
+
+void setup() {
+  // Ultrasonic sensor setup
+  pinMode(trigPin, OUTPUT); 
+  pinMode(echoPin, INPUT);
+  
+  // Motor driver setup
+  pinMode(IN1, OUTPUT);
+  pinMode(IN2, OUTPUT);
+  pinMode(IN3, OUTPUT);
+  pinMode(IN4, OUTPUT);
+  
+  // Initialize distance readings array
+  for (int i = 0; i < SMOOTHING_READINGS; i++) {
+    distanceReadings[i] = OBSTACLE_DISTANCE + 10; // Start with safe distance
+    total += distanceReadings[i];
+  }
+  
+  Serial.begin(9600);
+  Serial.println("🤖 Autonomous Robot Started");
+  
+  // Start moving forward
+  moveForward();
+  currentState = MOVING_FORWARD;
+}
+
+void loop() {
+  // Always update distance reading
+  averageDistance = getSmoothedDistance();
+  
+  // State machine - handles behavior based on current state
+  switch (currentState) {
+    
+    case MOVING_FORWARD:
+      // Check for obstacles while moving
+      if (averageDistance <= OBSTACLE_DISTANCE && averageDistance > 0) {
+        obstacleCount++;
+        Serial.print("⚠ Obstacle detected (");
+        Serial.print(obstacleCount);
+        Serial.print("/");
+        Serial.print(CONFIRMATION_COUNT);
+        Serial.println(")");
+        
+        // Confirmed obstacle - start avoidance
+        if (obstacleCount >= CONFIRMATION_COUNT) {
+          Serial.println("🚫 OBSTACLE CONFIRMED! Stopping...");
+          stopMotors();
+          currentState = OBSTACLE_STOP;
+          stateStartTime = millis();
+          obstacleCount = 0;
+        }
+      } else {
+        // Clear path - reset counter
+        obstacleCount = 0;
+      }
+      break;
+      
+    case OBSTACLE_STOP:
+      // Stop for 500ms before turning
+      if (millis() - stateStartTime >= STOP_TIME) {
+        Serial.println("↪ Turning left...");
+        turnLeft();
+        currentState = TURNING_LEFT;
+        stateStartTime = millis();
+      }
+      break;
+      
+    case TURNING_LEFT:
+      // Turn left for TURN_TIME
+      if (millis() - stateStartTime >= TURN_TIME) {
+        Serial.println("🛑 Stopping to check path...");
+        stopMotors();
+        currentState = CHECKING_PATH;
+        stateStartTime = millis();
+      }
+      break;
+      
+    case CHECKING_PATH:
+      // Brief stop to check if path is clear
+      if (millis() - stateStartTime >= 300) {
+        averageDistance = getSmoothedDistance();
+        Serial.print("📏 Distance after left turn: ");
+        Serial.print(averageDistance);
+        Serial.println(" cm");
+        
+        if (averageDistance <= OBSTACLE_DISTANCE) {
+          // Path still blocked - turn right instead
+          Serial.println("❌ Path blocked! Turning right...");
+          turnRight();
+          currentState = TURNING_RIGHT;
+          stateStartTime = millis();
+        } else {
+          // Path is clear - resume forward
+          Serial.println("✅ Path clear! Moving forward...");
+          moveForward();
+          currentState = MOVING_FORWARD;
+          obstacleCount = 0;
+        }
+      }
+      break;
+      
+    case TURNING_RIGHT:
+      // Turn right for longer (to face opposite direction)
+      if (millis() - stateStartTime >= (TURN_TIME * 2)) {
+        Serial.println("✅ Turn complete! Moving forward...");
+        stopMotors();
+        delay(300);
+        moveForward();
+        currentState = MOVING_FORWARD;
+        obstacleCount = 0;
+      }
+      break;
+  }
+  
+  delay(50); // Small delay for loop stability
+}
+
+// Function to get smoothed distance from ultrasonic sensor
+int getSmoothedDistance() {
+  // Remove the oldest reading
+  total = total - distanceReadings[readIndex];
+  
+  // Get new reading
+  distanceReadings[readIndex] = getRawDistance();
+  
+  // Add new reading to total
+  total = total + distanceReadings[readIndex];
+  
+  // Advance to next position
+  readIndex = readIndex + 1;
+  if (readIndex >= SMOOTHING_READINGS) {
+    readIndex = 0;
+  }
+  
+  // Calculate average
+  return total / SMOOTHING_READINGS;
+}
+
+// Function to get single raw distance reading
+int getRawDistance() {
+  digitalWrite(trigPin, LOW);
+  delayMicroseconds(2);
+  digitalWrite(trigPin, HIGH);
+  delayMicroseconds(10);
+  digitalWrite(trigPin, LOW);
+  
+  duration = pulseIn(echoPin, HIGH, 20000); // 20ms timeout
+  
+  if (duration == 0) return 400; // Timeout
+  
+  int dist = duration * 0.0343 / 2;
+  
+  // Filter out invalid readings
+  if (dist > 400 || dist < 0) {
+    return 400;
+  }
+  return dist;
+}
+
+// Motor control functions
+void moveForward() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+  Serial.println("⬆ Moving Forward");
+}
+
+void turnRight() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, HIGH);
+  digitalWrite(IN3, HIGH);
+  digitalWrite(IN4, LOW);
+  Serial.println("↪ Turning Right");
+}
+
+void turnLeft() {
+  digitalWrite(IN1, HIGH);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, HIGH);
+  Serial.println("↩ Turning Left");
+}
+
+void stopMotors() {
+  digitalWrite(IN1, LOW);
+  digitalWrite(IN2, LOW);
+  digitalWrite(IN3, LOW);
+  digitalWrite(IN4, LOW);
+  Serial.println("🛑 Stopped");
+}
