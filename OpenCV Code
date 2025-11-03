@@ -1,0 +1,95 @@
+import cv2
+import numpy as np
+import urllib.request
+
+# --- IMPORTANT ---
+# Replace this with the IP address and port shown in your ESP32-CAM's Serial Monitor
+url = 'http://10.119.57.249' 
+
+# This attempts to read the MJPEG stream from the ESP32-CAM
+stream = urllib.request.urlopen(url)
+bytes_buffer = bytes()
+
+# Define the color range (HSV) for the object you want to detect.
+# This example is set for a bright GREEN object (e.g., a tennis ball).
+# You will need to calibrate these values for your specific environment/object!
+lower_green = np.array([40, 40, 40])
+upper_green = np.array([80, 255, 255])
+
+
+def detect_and_draw(frame):
+    """Processes the frame for color-based object detection."""
+    
+    # 1. Convert the image to the HSV color space
+    hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+    
+    # 2. Threshold the HSV image to get only the target color
+    mask = cv2.inRange(hsv, lower_green, upper_green)
+    
+    # 3. Use morphological operations to clean up the mask
+    # This helps fill small gaps and remove noise
+    mask = cv2.erode(mask, None, iterations=2)
+    mask = cv2.dilate(mask, None, iterations=2)
+    
+    # 4. Find contours in the mask
+    contours, _ = cv2.findContours(mask.copy(), cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    
+    if contours:
+        # Find the largest contour (assuming it's your object)
+        c = max(contours, key=cv2.contourArea)
+        
+        # Draw a bounding circle around the object if it's large enough
+        if cv2.contourArea(c) > 500: # Adjust size threshold as needed
+            ((x, y), radius) = cv2.minEnclosingCircle(c)
+            center_x = int(x)
+            center_y = int(y)
+            
+            # Draw the circle and centroid on the original frame
+            cv2.circle(frame, (center_x, center_y), int(radius), (0, 255, 0), 2)
+            cv2.circle(frame, (center_x, center_y), 5, (0, 0, 255), -1)
+            
+            # Print status to the console
+            print(f"Object detected at: ({center_x}, {center_y}) with radius: {int(radius)}")
+            
+            # --- Autonomy/Control Logic Placeholder ---
+            # if center_x < frame.shape[1] * 0.4:
+            #     print("Object to the left. Turn Left.")
+            # elif center_x > frame.shape[1] * 0.6:
+            #     print("Object to the right. Turn Right.")
+            # else:
+            #     print("Object centered. Move Forward.")
+            #
+            # *To send control commands back to the ESP8266, you would use another HTTP request or a library like Blynk.*
+            # --- End Placeholder ---
+            
+    return frame
+
+
+while True:
+    # Read the data stream from the ESP32-CAM
+    bytes_buffer += stream.read(4096)
+    
+    # Look for the JPEG markers (start and end)
+    a = bytes_buffer.find(b'\xff\xd8') # JPEG start
+    b = bytes_buffer.find(b'\xff\xd9') # JPEG end
+    
+    if a != -1 and b != -1:
+        # Extract the JPEG image data
+        jpg = bytes_buffer[a:b+2]
+        bytes_buffer = bytes_buffer[b+2:]
+        
+        # Decode the JPEG data into an OpenCV image frame
+        frame = cv2.imdecode(np.frombuffer(jpg, dtype=np.uint8), cv2.IMREAD_COLOR)
+        
+        if frame is not None:
+            processed_frame = detect_and_draw(frame)
+            
+            # Display the processed frame
+            cv2.imshow('Autonomous Robot Vision', processed_frame)
+
+    # Break loop on 'q' press
+    if cv2.waitKey(1) & 0xFF == ord('q'):
+        break
+
+# Cleanup
+cv2.destroyAllWindows()
